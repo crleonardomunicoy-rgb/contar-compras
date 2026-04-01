@@ -43,65 +43,46 @@ def limpiar_cuit(valor):
 
 
 # =========================
-# CONVERTIR A NUMÉRICO BIEN
+# CONVERTIR NUMÉRICOS
 # =========================
 def convertir_numerico(serie):
     s = serie.astype(str).str.strip()
-
-    s = s.replace({
-        "": pd.NA,
-        "nan": pd.NA,
-        "None": pd.NA,
-        "<NA>": pd.NA
-    })
-
+    s = s.replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
     s = s.str.replace(".", "", regex=False)
     s = s.str.replace(",", ".", regex=False)
-
     return pd.to_numeric(s, errors="coerce")
 
 
 # =========================
-# NORMALIZAR COLUMNAS NUMÉRICAS
+# NORMALIZAR NUMÉRICOS
 # =========================
 def normalizar_numericos(df):
-    keywords = [
-        "importe", "neto", "iva", "total",
-        "percepción", "retención", "tipo de cambio"
-    ]
-
-    excluir = [
-        "denominación", "proveedor", "vendedor"
-    ]
+    keywords = ["importe", "neto", "iva", "total", "tipo de cambio"]
 
     for col in df.columns:
         nombre = str(col).lower()
 
-        if any(x in nombre for x in excluir):
-            continue
-
         if any(x in nombre for x in keywords):
             if df[col].dtype == object:
-                convertido = convertir_numerico(df[col])
-                if convertido.notna().sum() > 0:
-                    df[col] = convertido
+                df[col] = convertir_numerico(df[col])
 
     return df
 
 
 # =========================
-# DETECTORES
+# DETECTORES MEJORADOS
 # =========================
-def detectar(df, palabras):
+def detectar_columna(df, posibles):
     for col in df.columns:
         nombre = str(col).lower()
-        if any(p in nombre for p in palabras):
-            return col
+        for p in posibles:
+            if p in nombre:
+                return col
     return None
 
 
 # =========================
-# PROCESO PRINCIPAL
+# PROCESO
 # =========================
 if uploaded_files:
     if st.button("Procesar"):
@@ -137,6 +118,12 @@ if uploaded_files:
                             df["Archivo"] = uploaded_file.name
 
                             dataframes.append(df)
+                    else:
+                        st.warning(f"No se encontró compras en {uploaded_file.name}")
+
+        if not dataframes:
+            st.error("No se encontraron datos")
+            st.stop()
 
         df_final = pd.concat(dataframes, ignore_index=True)
 
@@ -145,53 +132,65 @@ if uploaded_files:
         # =========================
         df_final = normalizar_numericos(df_final)
 
-        col_fecha = detectar(df_final, ["fecha"])
-        col_cuit = detectar(df_final, ["doc vendedor", "cuit"])
-        col_nombre = detectar(df_final, ["denominación", "proveedor", "vendedor"])
-        col_importe = detectar(df_final, ["importe total", "importe"])
+        # Detectar columnas
+        col_fecha = detectar_columna(df_final, ["fecha"])
+        col_cuit = detectar_columna(df_final, ["doc vendedor", "cuit"])
+        col_nombre = detectar_columna(df_final, ["denominación", "denominacion", "proveedor", "vendedor"])
+        col_importe = detectar_columna(df_final, ["importe total", "importe"])
 
-        # Fecha
+        st.write("Columnas detectadas:")
+        st.write({
+            "fecha": col_fecha,
+            "cuit": col_cuit,
+            "nombre": col_nombre,
+            "importe": col_importe
+        })
+
+        # =========================
+        # LIMPIEZAS
+        # =========================
         if col_fecha:
             df_final[col_fecha] = pd.to_datetime(df_final[col_fecha], errors="coerce")
 
-        # CUIT limpio
         if col_cuit:
             df_final[col_cuit] = df_final[col_cuit].apply(limpiar_cuit)
 
         # =========================
-        # PADRÓN
+        # PADRÓN FORZADO
         # =========================
-        padron = pd.DataFrame()
+        if col_cuit is None or col_importe is None:
+            st.error("No se pudo generar padrón: falta CUIT o importe")
+            st.stop()
 
-        if col_cuit and col_nombre and col_importe:
+        if col_nombre is None:
+            st.warning("No se detectó nombre proveedor → se usará CUIT como nombre")
+            df_final["Proveedor_TMP"] = df_final[col_cuit]
+            col_nombre = "Proveedor_TMP"
 
-            base = df_final[[col_cuit, col_nombre, col_importe]].copy()
+        base = df_final[[col_cuit, col_nombre, col_importe]].copy()
 
-            base["CUIT"] = base[col_cuit]
-            base["Proveedor"] = base[col_nombre]
-            base["Importe"] = pd.to_numeric(base[col_importe], errors="coerce").fillna(0)
+        base["CUIT"] = base[col_cuit].astype(str)
+        base["Proveedor"] = base[col_nombre].astype(str)
+        base["Importe"] = pd.to_numeric(base[col_importe], errors="coerce").fillna(0)
 
-            base = base[base["CUIT"] != ""]
+        base = base[base["CUIT"] != ""]
 
-            padron = base.groupby("CUIT").agg(
-                Proveedor=("Proveedor", "last"),
-                Cantidad_Comprobantes=("CUIT", "count"),
-                Importe_Total=("Importe", "sum")
-            ).reset_index()
+        padron = base.groupby("CUIT").agg(
+            Proveedor=("Proveedor", "last"),
+            Cantidad_Comprobantes=("CUIT", "count"),
+            Importe_Total=("Importe", "sum")
+        ).reset_index()
 
-            padron = padron.sort_values(by="Importe_Total", ascending=False)
+        padron = padron.sort_values(by="Importe_Total", ascending=False)
 
         # =========================
-        # EXPORTAR
+        # EXPORTAR SIEMPRE AMBAS HOJAS
         # =========================
         output = os.path.join(tempfile.gettempdir(), "compras_unificadas.xlsx")
 
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-
             df_final.to_excel(writer, sheet_name="Compras_Unificadas", index=False)
-
-            if not padron.empty:
-                padron.to_excel(writer, sheet_name="Padron_Proveedores", index=False)
+            padron.to_excel(writer, sheet_name="Padron_Proveedores", index=False)
 
         with open(output, "rb") as f:
             st.download_button(
@@ -200,4 +199,4 @@ if uploaded_files:
                 file_name="compras_unificadas.xlsx"
             )
 
-        st.success("✅ Archivo generado correctamente")
+        st.success(f"✅ OK. Registros: {len(df_final)} | Proveedores: {len(padron)}")
