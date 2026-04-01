@@ -12,8 +12,8 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
+# 🔧 Función para leer CSV con distintos encodings
 def leer_csv_seguro(file):
-    """Intenta leer el CSV con distintos encodings"""
     for encoding in ["utf-8", "latin-1", "cp1252"]:
         try:
             file.seek(0)
@@ -22,8 +22,25 @@ def leer_csv_seguro(file):
             continue
     raise Exception("No se pudo leer el archivo con ningún encoding")
 
+# 🔧 Función para normalizar números (AFIP → Excel correcto)
+def normalizar_numeros(df):
+    for col in df.columns:
+        if df[col].dtype == object:
+            try:
+                df[col] = (
+                    df[col]
+                    .astype(str)
+                    .str.replace('.', '', regex=False)   # miles
+                    .str.replace(',', '.', regex=False)  # decimal
+                )
+                df[col] = pd.to_numeric(df[col], errors='ignore')
+            except:
+                pass
+    return df
+
 if uploaded_files:
     if st.button("Unificar archivos"):
+
         dataframes = []
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -31,6 +48,7 @@ if uploaded_files:
             for uploaded_file in uploaded_files:
                 zip_path = os.path.join(temp_dir, uploaded_file.name)
 
+                # Guardar ZIP temporalmente
                 with open(zip_path, "wb") as f:
                     f.write(uploaded_file.read())
 
@@ -39,10 +57,9 @@ if uploaded_files:
                     archivos = zip_ref.namelist()
                     archivo_compras = None
 
-                    # 🔎 Buscar el CSV aunque esté en subcarpetas
+                    # 🔎 Buscar CSV de compras (aunque esté en subcarpetas)
                     for file in archivos:
                         nombre = file.lower()
-
                         if "comprobantes_compras" in nombre and file.endswith(".csv"):
                             archivo_compras = file
                             break
@@ -54,8 +71,8 @@ if uploaded_files:
                                 df = leer_csv_seguro(f)
 
                                 # 📅 Extraer período del nombre del ZIP
-                                periodo = uploaded_file.name.lower()
-                                periodo = periodo.replace("libro_iva_periodo_", "")
+                                nombre_zip = uploaded_file.name.lower()
+                                periodo = nombre_zip.replace("libro_iva_periodo_", "")
                                 periodo = periodo.replace("_original.zip", "")
 
                                 df["Periodo"] = periodo
@@ -68,19 +85,23 @@ if uploaded_files:
                             st.error(f"❌ Error leyendo {archivo_compras}: {e}")
 
                     else:
-                        st.warning(f"⚠️ No se encontró archivo de compras en {uploaded_file.name}")
+                        st.warning(f"⚠️ No se encontró comprobantes_compras.csv en {uploaded_file.name}")
 
         if dataframes:
+
             df_final = pd.concat(dataframes, ignore_index=True)
 
-            # 🔄 Ordenar por fecha si existe
-            posibles_columnas_fecha = [
+            # 🔢 NORMALIZAR NÚMEROS (CLAVE)
+            df_final = normalizar_numeros(df_final)
+
+            # 📅 Ordenar por fecha si existe
+            posibles_fechas = [
                 "Fecha de Emisión",
                 "fecha",
                 "Fecha"
             ]
 
-            for col in posibles_columnas_fecha:
+            for col in posibles_fechas:
                 if col in df_final.columns:
                     try:
                         df_final[col] = pd.to_datetime(df_final[col], errors="coerce")
@@ -95,6 +116,7 @@ if uploaded_files:
             with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
                 df_final.to_excel(writer, sheet_name="Compras_Unificadas", index=False)
 
+            # 📥 Descargar
             with open(output_path, "rb") as f:
                 st.download_button(
                     "📥 Descargar Excel",
