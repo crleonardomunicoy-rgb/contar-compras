@@ -4,7 +4,7 @@ import zipfile
 import os
 import tempfile
 
-st.title("📊 Contar - Unificación de Compras")
+st.title("📊 Contar - Unificación de Compras + Padrón")
 
 uploaded_files = st.file_uploader(
     "Subí los archivos ZIP de ARCA",
@@ -12,7 +12,9 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# 🔧 Función para leer CSV con distintos encodings
+# =========================
+# LECTURA SEGURA CSV
+# =========================
 def leer_csv_seguro(file):
     for encoding in ["utf-8", "latin-1", "cp1252"]:
         try:
@@ -22,7 +24,9 @@ def leer_csv_seguro(file):
             continue
     raise Exception("No se pudo leer el archivo con ningún encoding")
 
-# 🔧 Función para normalizar números (AFIP → Excel correcto)
+# =========================
+# NORMALIZACIÓN NUMÉRICA
+# =========================
 def normalizar_numeros(df):
     for col in df.columns:
         if df[col].dtype == object:
@@ -30,16 +34,51 @@ def normalizar_numeros(df):
                 df[col] = (
                     df[col]
                     .astype(str)
-                    .str.replace('.', '', regex=False)   # miles
-                    .str.replace(',', '.', regex=False)  # decimal
+                    .str.replace('.', '', regex=False)
+                    .str.replace(',', '.', regex=False)
                 )
                 df[col] = pd.to_numeric(df[col], errors='ignore')
             except:
                 pass
     return df
 
+# =========================
+# LIMPIAR CUIT
+# =========================
+def limpiar_cuit(cuit):
+    try:
+        return ''.join(filter(str.isdigit, str(cuit)))
+    except:
+        return None
+
+# =========================
+# SUGERENCIA CONTABLE
+# =========================
+def sugerir_cuenta(nombre):
+    nombre = str(nombre).upper()
+
+    if any(x in nombre for x in ["YPF", "SHELL", "AXION", "COMBUST"]):
+        return "Combustibles y Lubricantes"
+
+    if any(x in nombre for x in ["TRANSP", "FLETE", "LOGIST"]):
+        return "Fletes y Movilidad"
+
+    if any(x in nombre for x in ["HONOR", "ESTUDIO", "CONSULT", "ASESOR"]):
+        return "Honorarios Profesionales"
+
+    if any(x in nombre for x in ["FERRE", "CORRALON", "MATERIALES"]):
+        return "Compras de Materiales"
+
+    if any(x in nombre for x in ["SUPER", "MERCADO", "MAYORISTA"]):
+        return "Compras de Mercaderías"
+
+    return "A revisar"
+
+# =========================
+# PROCESO PRINCIPAL
+# =========================
 if uploaded_files:
-    if st.button("Unificar archivos"):
+    if st.button("Procesar información"):
 
         dataframes = []
 
@@ -48,83 +87,103 @@ if uploaded_files:
             for uploaded_file in uploaded_files:
                 zip_path = os.path.join(temp_dir, uploaded_file.name)
 
-                # Guardar ZIP temporalmente
                 with open(zip_path, "wb") as f:
                     f.write(uploaded_file.read())
 
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
 
-                    archivos = zip_ref.namelist()
                     archivo_compras = None
 
-                    # 🔎 Buscar CSV de compras (aunque esté en subcarpetas)
-                    for file in archivos:
-                        nombre = file.lower()
-                        if "comprobantes_compras" in nombre and file.endswith(".csv"):
+                    for file in zip_ref.namelist():
+                        if "comprobantes_compras" in file.lower() and file.endswith(".csv"):
                             archivo_compras = file
                             break
 
                     if archivo_compras:
-                        try:
-                            with zip_ref.open(archivo_compras) as f:
+                        with zip_ref.open(archivo_compras) as f:
 
-                                df = leer_csv_seguro(f)
+                            df = leer_csv_seguro(f)
 
-                                # 📅 Extraer período del nombre del ZIP
-                                nombre_zip = uploaded_file.name.lower()
-                                periodo = nombre_zip.replace("libro_iva_periodo_", "")
-                                periodo = periodo.replace("_original.zip", "")
+                            nombre_zip = uploaded_file.name.lower()
+                            periodo = nombre_zip.replace("libro_iva_periodo_", "").replace("_original.zip", "")
 
-                                df["Periodo"] = periodo
-                                df["Archivo_Origen"] = uploaded_file.name
-                                df["Archivo_CSV"] = archivo_compras
+                            df["Periodo"] = periodo
+                            df["Archivo_Origen"] = uploaded_file.name
 
-                                dataframes.append(df)
-
-                        except Exception as e:
-                            st.error(f"❌ Error leyendo {archivo_compras}: {e}")
-
-                    else:
-                        st.warning(f"⚠️ No se encontró comprobantes_compras.csv en {uploaded_file.name}")
+                            dataframes.append(df)
 
         if dataframes:
 
             df_final = pd.concat(dataframes, ignore_index=True)
 
-            # 🔢 NORMALIZAR NÚMEROS (CLAVE)
+            # Normalizar números
             df_final = normalizar_numeros(df_final)
 
-            # 📅 Ordenar por fecha si existe
-            posibles_fechas = [
-                "Fecha de Emisión",
-                "fecha",
-                "Fecha"
-            ]
+            # =========================
+            # PADRÓN DE PROVEEDORES
+            # =========================
 
-            for col in posibles_fechas:
-                if col in df_final.columns:
-                    try:
-                        df_final[col] = pd.to_datetime(df_final[col], errors="coerce")
-                        df_final = df_final.sort_values(by=col)
-                        break
-                    except:
-                        pass
+            # Detectar columnas
+            col_cuit = None
+            col_nombre = None
+            col_importe = None
 
-            # 📁 Exportar Excel
+            for col in df_final.columns:
+                if "doc" in col.lower():
+                    col_cuit = col
+                if "denom" in col.lower():
+                    col_nombre = col
+                if "importe" in col.lower() and col_importe is None:
+                    col_importe = col
+
+            if col_cuit and col_nombre:
+
+                padron = df_final.copy()
+
+                padron["CUIT_LIMPIO"] = padron[col_cuit].apply(limpiar_cuit)
+
+                padron = padron.groupby("CUIT_LIMPIO").agg({
+                    col_nombre: "last",
+                    col_importe: "sum"
+                }).reset_index()
+
+                padron.rename(columns={
+                    col_nombre: "Proveedor",
+                    col_importe: "Importe Total"
+                }, inplace=True)
+
+                # Cantidad de comprobantes
+                conteo = df_final.groupby(col_cuit).size().reset_index(name="Cantidad Comprobantes")
+                conteo["CUIT_LIMPIO"] = conteo[col_cuit].apply(limpiar_cuit)
+
+                padron = padron.merge(conteo[["CUIT_LIMPIO", "Cantidad Comprobantes"]], on="CUIT_LIMPIO", how="left")
+
+                # Sugerencia contable
+                padron["Cuenta Sugerida"] = padron["Proveedor"].apply(sugerir_cuenta)
+
+            else:
+                padron = pd.DataFrame()
+
+            # =========================
+            # EXPORTAR EXCEL
+            # =========================
+
             output_path = os.path.join(tempfile.gettempdir(), "compras_unificadas.xlsx")
 
             with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
                 df_final.to_excel(writer, sheet_name="Compras_Unificadas", index=False)
 
-            # 📥 Descargar
+                if not padron.empty:
+                    padron.to_excel(writer, sheet_name="Padron_Proveedores", index=False)
+
             with open(output_path, "rb") as f:
                 st.download_button(
-                    "📥 Descargar Excel",
+                    "📥 Descargar Excel Completo",
                     f,
                     file_name="compras_unificadas.xlsx"
                 )
 
-            st.success(f"✅ {len(df_final)} registros procesados correctamente")
+            st.success("✅ Proceso completo: compras + padrón generado")
 
         else:
-            st.warning("⚠️ No se encontraron datos de compras en los archivos cargados")
+            st.warning("No se encontraron datos de compras")
