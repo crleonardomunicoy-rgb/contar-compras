@@ -70,7 +70,7 @@ def normalizar_numericos(df):
 
 
 # =========================
-# DETECTORES MEJORADOS
+# DETECTAR COLUMNAS (MEJORADO)
 # =========================
 def detectar_columna(df, posibles):
     for col in df.columns:
@@ -119,7 +119,7 @@ if uploaded_files:
 
                             dataframes.append(df)
                     else:
-                        st.warning(f"No se encontró compras en {uploaded_file.name}")
+                        st.warning(f"No se encontró archivo de compras en {uploaded_file.name}")
 
         if not dataframes:
             st.error("No se encontraron datos")
@@ -132,12 +132,32 @@ if uploaded_files:
         # =========================
         df_final = normalizar_numericos(df_final)
 
-        # Detectar columnas
-        col_fecha = detectar_columna(df_final, ["fecha"])
-        col_cuit = detectar_columna(df_final, ["doc vendedor", "cuit"])
-        col_nombre = detectar_columna(df_final, ["denominación", "denominacion", "proveedor", "vendedor"])
-        col_importe = detectar_columna(df_final, ["importe total", "importe"])
+        # =========================
+        # DETECCIÓN CORRECTA
+        # =========================
+        col_fecha = detectar_columna(df_final, ["fecha de emisión", "fecha"])
+        
+        col_cuit = detectar_columna(df_final, [
+            "nro. doc. vendedor",
+            "nro doc vendedor",
+            "numero doc vendedor",
+            "cuit"
+        ])
 
+        col_nombre = detectar_columna(df_final, [
+            "denominación vendedor",
+            "denominacion vendedor",
+            "razón social",
+            "razon social",
+            "proveedor"
+        ])
+
+        col_importe = detectar_columna(df_final, [
+            "importe total",
+            "importe"
+        ])
+
+        # DEBUG CLAVE
         st.write("Columnas detectadas:")
         st.write({
             "fecha": col_fecha,
@@ -156,17 +176,26 @@ if uploaded_files:
             df_final[col_cuit] = df_final[col_cuit].apply(limpiar_cuit)
 
         # =========================
-        # PADRÓN FORZADO
+        # VALIDACIÓN FUERTE
         # =========================
-        if col_cuit is None or col_importe is None:
-            st.error("No se pudo generar padrón: falta CUIT o importe")
+        if col_cuit is None:
+            st.error("❌ No se detectó columna de CUIT")
+            st.write(df_final.columns.tolist())
+            st.stop()
+
+        if col_importe is None:
+            st.error("❌ No se detectó columna de importe")
+            st.write(df_final.columns.tolist())
             st.stop()
 
         if col_nombre is None:
-            st.warning("No se detectó nombre proveedor → se usará CUIT como nombre")
+            st.warning("⚠️ No se detectó nombre → se usará CUIT")
             df_final["Proveedor_TMP"] = df_final[col_cuit]
             col_nombre = "Proveedor_TMP"
 
+        # =========================
+        # PADRÓN
+        # =========================
         base = df_final[[col_cuit, col_nombre, col_importe]].copy()
 
         base["CUIT"] = base[col_cuit].astype(str)
@@ -184,7 +213,7 @@ if uploaded_files:
         padron = padron.sort_values(by="Importe_Total", ascending=False)
 
         # =========================
-        # EXPORTAR SIEMPRE AMBAS HOJAS
+        # EXPORTAR
         # =========================
         output = os.path.join(tempfile.gettempdir(), "compras_unificadas.xlsx")
 
@@ -199,4 +228,4 @@ if uploaded_files:
                 file_name="compras_unificadas.xlsx"
             )
 
-        st.success(f"✅ OK. Registros: {len(df_final)} | Proveedores: {len(padron)}")
+        st.success(f"✅ OK → {len(df_final)} registros | {len(padron)} proveedores")
